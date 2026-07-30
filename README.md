@@ -10,3 +10,9 @@ device-control tools and no network calls.
 
 After adding, tick **Abode Tools** under the conversation agent's Tool
 Providers.
+
+## Credits
+
+Designed and directed by Jason Wienert (Mere Mortals Consulting).
+Implementation, research and code written in collaboration with
+Claude (Anthropic).
