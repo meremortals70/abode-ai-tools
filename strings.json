@@ -1,0 +1,26 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Abode Tools",
+        "description": "Leave both fields empty for device control only. Enter a Paperless MCP endpoint to add the document tools.",
+        "data": {
+          "paperless_url": "Paperless MCP URL",
+          "paperless_token": "Paperless token (optional)"
+        }
+      },
+      "reconfigure": {
+        "title": "Abode Tools",
+        "description": "Change or clear the Paperless MCP endpoint.",
+        "data": {
+          "paperless_url": "Paperless MCP URL",
+          "paperless_token": "Paperless token (optional)"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Abode Tools is already configured.",
+      "reconfigure_successful": "Abode Tools reconfigured."
+    }
+  }
+}

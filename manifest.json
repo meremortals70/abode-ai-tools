@@ -1,0 +1,13 @@
+{
+  "domain": "abode_tools",
+  "name": "Abode Tools",
+  "codeowners": [],
+  "config_flow": true,
+  "single_config_entry": true,
+  "dependencies": ["homeassistant", "conversation"],
+  "documentation": "https://github.com/home-assistant/core/blob/dev/homeassistant/helpers/llm.py",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "requirements": [],
+  "version": "2.0.0"
+}
