@@ -1,4 +1,5 @@
 # Abode Tools
+v0.2.0
 
 A bounded Home Assistant LLM API for the Abode voice path. Four tools with
 result sizes hard-capped in code, plus optional Paperless document tools.
