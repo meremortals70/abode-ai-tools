@@ -1,14 +1,19 @@
 # Abode AI Tools
-v0.3.1
+v0.4.0
 
 Gives your voice assistant a small, fixed set of things it can do in the
 house — and nothing else.
 
 ## What it does
 
-- **Find things** — "which lights are on upstairs" — searches your devices by
-  name, room or type, and returns up to 20 matches with their room and
-  current state.
+- **Find things** — "which lights are on in the lounge" — searches your
+  devices by name, room, type or whether they are on or off, and returns the
+  names, up to 20 at a time. If there are more than 20 it says so and gives
+  the real total, rather than quietly stopping at 20.
+- **Understands room names** — "lounge" and "lounge room" both find the same
+  room, and any nicknames you have set for a room work too. If it does not
+  recognise a room name, it says which rooms it does know about instead of
+  guessing.
 - **Check one thing** — "is the garage door shut" — reads a single device and
   a handful of its details.
 - **Do one thing** — "turn the deck light on" — acts on a single device.

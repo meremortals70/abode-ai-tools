@@ -123,23 +123,83 @@ ALLOWED_SERVICE_DOMAINS = set(CONTROLLABLE_DOMAINS) | {"homeassistant"}
 automation editing, backups, recorder purges and anything else destructive."""
 
 
+def _area_id(hass: HomeAssistant, entity_id: str) -> str | None:
+    """Return the area_id for an entity, falling back to its device."""
+    entry = er.async_get(hass).async_get(entity_id)
+    if entry is None:
+        return None
+
+    if entry.area_id:
+        return entry.area_id
+
+    if entry.device_id:
+        device = dr.async_get(hass).async_get(entry.device_id)
+        return device.area_id if device else None
+
+    return None
+
+
 def _area_name(hass: HomeAssistant, entity_id: str) -> str:
     """Return the area name for an entity, or an empty string."""
-    ent_reg = er.async_get(hass)
-    entry = ent_reg.async_get(entity_id)
-    if entry is None:
-        return ""
-
-    area_id = entry.area_id
-    if area_id is None and entry.device_id:
-        device = dr.async_get(hass).async_get(entry.device_id)
-        area_id = device.area_id if device else None
-
+    area_id = _area_id(hass, entity_id)
     if area_id is None:
         return ""
 
     area = ar.async_get(hass).async_get_area(area_id)
     return area.name if area else ""
+
+
+def _area_matches(requested: str, area: Any) -> bool:
+    """Match a spoken area against an area's name or any of its aliases.
+
+    Matching is bidirectional on purpose. "lounge" must find "Lounge Room",
+    and "lounge room" must find "Lounge" - a one-directional substring test
+    only handles the first of those. Aliases are consulted the same way, so
+    an area named "Lounge Room" with the alias "TV room" answers to both,
+    exactly as Home Assistant's own local intents do.
+    """
+    candidates = [area.name, *(area.aliases or ())]
+    for candidate in candidates:
+        value = (candidate or "").strip().lower()
+        if not value:
+            continue
+        if requested in value or value in requested:
+            return True
+    return False
+
+
+def _matching_area_ids(hass: HomeAssistant, requested: str) -> set[str]:
+    """Return every area_id whose name or alias matches the request."""
+    area_reg = ar.async_get(hass)
+    return {
+        area.id for area in area_reg.async_list_areas()
+        if _area_matches(requested, area)
+    }
+
+
+def _known_area_names(hass: HomeAssistant) -> list[str]:
+    """Area names holding at least one entity this assistant can see.
+
+    Deliberately not every area in Home Assistant. Offering an area whose
+    entities are all unexposed would send the model to a room it cannot see
+    into, and it would fail a second time.
+    """
+    area_reg = ar.async_get(hass)
+    found: set[str] = set()
+
+    for entity_id in hass.states.async_entity_ids():
+        if entity_id.split(".")[0] not in READABLE_DOMAINS:
+            continue
+        if not _visible(hass, entity_id):
+            continue
+        area_id = _area_id(hass, entity_id)
+        if area_id is None:
+            continue
+        area = area_reg.async_get_area(area_id)
+        if area:
+            found.add(area.name)
+
+    return sorted(found)
 
 
 def _visible(hass: HomeAssistant, entity_id: str) -> bool:
@@ -164,19 +224,22 @@ def _record(hass: HomeAssistant, entity_id: str) -> dict[str, str]:
 
 
 class SearchEntitiesTool(llm.Tool):
-    """Find entities by name, area or domain. Results are capped in code."""
+    """Find entities by name, area, domain or state. Results capped in code."""
 
     name = "search_entities"
     description = (
         "Find devices in this home. Returns at most 20 matches, each with its "
-        "entity_id, name, area and current state. Use before calling "
-        "call_service when you do not already know the entity_id."
+        "entity_id, name, area and current state. Filter with state (for "
+        "example state='on') to ask what is currently on, and with area to "
+        "ask about one room. Use before calling call_service when you do not "
+        "already know the entity_id."
     )
     parameters = vol.Schema(
         {
             vol.Optional("query"): str,
             vol.Optional("domain"): str,
             vol.Optional("area"): str,
+            vol.Optional("state"): str,
         }
     )
 
@@ -191,21 +254,38 @@ class SearchEntitiesTool(llm.Tool):
         query = (args.get("query") or "").strip().lower()
         domain = (args.get("domain") or "").strip().lower()
         area = (args.get("area") or "").strip().lower()
+        state_filter = (args.get("state") or "").strip().lower()
+
+        # An unrecognised area returns the areas that do exist, so the model
+        # can correct itself instead of guessing again. This costs no prefill:
+        # it is not a tool schema, only a reply on a turn that already failed.
+        area_ids: set[str] = set()
+        if area:
+            area_ids = _matching_area_ids(hass, area)
+            if not area_ids:
+                return {
+                    "results": [],
+                    "count": 0,
+                    "error": f"No area matching '{area}'.",
+                    "known_areas": _known_area_names(hass),
+                }
 
         matches: list[dict[str, str]] = []
-        truncated = False
+        total = 0
 
         for entity_id in hass.states.async_entity_ids():
             if entity_id.split(".")[0] not in READABLE_DOMAINS:
                 continue
             if domain and not entity_id.startswith(f"{domain}."):
                 continue
+            if area_ids and _area_id(hass, entity_id) not in area_ids:
+                continue
             if not _visible(hass, entity_id):
                 continue
 
             record = _record(hass, entity_id)
 
-            if area and area not in record["area"].lower():
+            if state_filter and record["state"].lower() != state_filter:
                 continue
             if query and (
                 query not in record["name"].lower()
@@ -213,15 +293,18 @@ class SearchEntitiesTool(llm.Tool):
             ):
                 continue
 
-            if len(matches) >= MAX_RESULTS:
-                truncated = True
-                break
-            matches.append(record)
+            # Count every match, cap only what is returned. Stopping the loop
+            # at MAX_RESULTS made a truncated result indistinguishable from a
+            # complete one: 54 matching lights reported as "count: 20".
+            total += 1
+            if len(matches) < MAX_RESULTS:
+                matches.append(record)
 
-        result: dict[str, Any] = {"results": matches, "count": len(matches)}
-        if truncated:
+        result: dict[str, Any] = {"results": matches, "count": total}
+        if total > len(matches):
             result["note"] = (
-                f"More than {MAX_RESULTS} matches. Narrow with domain or area."
+                f"{total} matches, showing the first {MAX_RESULTS}. "
+                "Narrow with domain, area or state."
             )
         return result
 
