@@ -85,4 +85,4 @@ Providers.
 
 Designed and directed by Jason Wienert (Mere Mortals Consulting).
 Implementation, research and code written in collaboration with
-Claude (Anthropic).
+OpenCode.
