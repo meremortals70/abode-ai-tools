@@ -1,10 +1,10 @@
 # Abode AI Tools
-v0.5.0
+v0.5.1
 
-Requires Home Assistant 2026.10 or newer. v0.5.0 returns `llm.ToolResult`
-from every tool and declares the integration on every tool, the two changes
-Home Assistant 2026.10 introduced and will enforce in 2027.10/2027.11.
-See "Changes in v0.5.0" below.
+Requires Home Assistant 2026.10 or newer. Since v0.5.0 every LLM tool
+returns `llm.ToolResult` and declares the integration that provides it, the
+two changes Home Assistant 2026.10 introduced and will enforce in
+2027.10/2027.11. See the changes below.
 
 Gives your voice assistant a small, fixed set of things it can do in the
 house — and nothing else.
@@ -61,6 +61,14 @@ device-control tools and no network calls.
 
 After adding, tick **Abode AI Tools** under the conversation agent's Tool
 Providers.
+
+## Changes in v0.5.1
+
+- Removed the legacy `custom_components/abode_tools/` integration (v0.2.0).
+  The repository now contains exactly one integration, `abode_ai_tools`.
+  If that folder still exists on your Home Assistant instance, delete it and
+  remove any `abode_tools:` line from `configuration.yaml`.
+- Corrected the manifest documentation and issue-tracker links.
 
 ## Changes in v0.5.0
 

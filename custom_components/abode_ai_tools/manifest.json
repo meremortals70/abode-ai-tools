@@ -1,16 +1,19 @@
 {
   "domain": "abode_ai_tools",
   "name": "Abode AI Tools",
-  "codeowners": [],
+  "codeowners": [
+    "@meremortals70"
+  ],
   "config_flow": true,
   "single_config_entry": true,
   "dependencies": [
     "homeassistant",
     "conversation"
   ],
-  "documentation": "https://github.com/home-assistant/core/blob/dev/homeassistant/helpers/llm.py",
+  "documentation": "https://github.com/meremortals70/abode-ai-tools",
+  "issue_tracker": "https://github.com/meremortals70/abode-ai-tools/issues",
   "integration_type": "service",
   "iot_class": "local_polling",
   "requirements": [],
-  "version": "0.5.0"
+  "version": "0.5.1"
 }
