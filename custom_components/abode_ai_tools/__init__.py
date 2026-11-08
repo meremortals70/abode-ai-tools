@@ -227,6 +227,14 @@ class SearchEntitiesTool(llm.Tool):
     """Find entities by name, area, domain or state. Results capped in code."""
 
     name = "search_entities"
+    title = "Search devices"
+    # Declared explicitly since HA 2026.10. Without it Home Assistant logs
+    # "provides the LLM tool ... without an integration" and stops accepting
+    # the tool in 2027.10 (homeassistant/helpers/llm.py, report_untagged_tool).
+    integration = DOMAIN
+    annotations = llm.ToolAnnotations(
+        read_only=True, destructive=False, idempotent=True, open_world=False
+    )
     description = (
         "Find devices in this home. Returns at most 20 matches, each with its "
         "entity_id, name, area and current state. Filter with state (for "
@@ -248,7 +256,7 @@ class SearchEntitiesTool(llm.Tool):
         hass: HomeAssistant,
         tool_input: llm.ToolInput,
         llm_context: llm.LLMContext,
-    ) -> dict[str, Any]:
+    ) -> llm.ToolResult:
         """Search the entity registry and return capped, projected records."""
         args = tool_input.tool_args
         query = (args.get("query") or "").strip().lower()
@@ -263,12 +271,15 @@ class SearchEntitiesTool(llm.Tool):
         if area:
             area_ids = _matching_area_ids(hass, area)
             if not area_ids:
-                return {
-                    "results": [],
-                    "count": 0,
-                    "error": f"No area matching '{area}'.",
-                    "known_areas": _known_area_names(hass),
-                }
+                return llm.ToolResult(
+                    data={
+                        "results": [],
+                        "count": 0,
+                        "error": f"No area matching '{area}'.",
+                        "known_areas": _known_area_names(hass),
+                    },
+                    error=True,
+                )
 
         matches: list[dict[str, str]] = []
         total = 0
@@ -306,13 +317,18 @@ class SearchEntitiesTool(llm.Tool):
                 f"{total} matches, showing the first {MAX_RESULTS}. "
                 "Narrow with domain, area or state."
             )
-        return result
+        return llm.ToolResult(data=result)
 
 
 class GetEntityStateTool(llm.Tool):
     """Read one entity's state and a bounded set of its attributes."""
 
     name = "get_entity_state"
+    title = "Get device state"
+    integration = DOMAIN
+    annotations = llm.ToolAnnotations(
+        read_only=True, destructive=False, idempotent=True, open_world=False
+    )
     description = (
         "Get the current state of one entity by entity_id, with a few of its "
         "most useful attributes."
@@ -324,16 +340,20 @@ class GetEntityStateTool(llm.Tool):
         hass: HomeAssistant,
         tool_input: llm.ToolInput,
         llm_context: llm.LLMContext,
-    ) -> dict[str, Any]:
+    ) -> llm.ToolResult:
         """Return one entity's state, with attributes capped."""
         entity_id = tool_input.tool_args["entity_id"]
 
         if not _visible(hass, entity_id):
-            return {"error": f"{entity_id} is not available."}
+            return llm.ToolResult(
+                data={"error": f"{entity_id} is not available."}, error=True
+            )
 
         state = hass.states.get(entity_id)
         if state is None:
-            return {"error": f"{entity_id} does not exist."}
+            return llm.ToolResult(
+                data={"error": f"{entity_id} does not exist."}, error=True
+            )
 
         skip = {"friendly_name", "icon", "supported_features", "device_class"}
         attributes = {
@@ -343,19 +363,29 @@ class GetEntityStateTool(llm.Tool):
         }
         trimmed = dict(list(attributes.items())[:MAX_ATTRIBUTES])
 
-        return {
-            "entity_id": entity_id,
-            "name": state.attributes.get("friendly_name", entity_id),
-            "area": _area_name(hass, entity_id),
-            "state": state.state,
-            "attributes": trimmed,
-        }
+        return llm.ToolResult(
+            data={
+                "entity_id": entity_id,
+                "name": state.attributes.get("friendly_name", entity_id),
+                "area": _area_name(hass, entity_id),
+                "state": state.state,
+                "attributes": trimmed,
+            }
+        )
 
 
 class CallServiceTool(llm.Tool):
     """Act on a device. Domain-restricted, single entity, fixed reply."""
 
     name = "call_service"
+    title = "Control a device"
+    integration = DOMAIN
+    # Writes, but does not remove anything, and touches nothing outside this
+    # home. Not idempotent: "turn on" twice is not the same as once for every
+    # service this tool can reach.
+    annotations = llm.ToolAnnotations(
+        read_only=False, destructive=False, idempotent=False, open_world=False
+    )
     description = (
         "Act on a device. service is like 'light.turn_on' or 'cover.close_cover'. "
         "entity_id must be an exact entity_id from search_entities."
@@ -372,23 +402,33 @@ class CallServiceTool(llm.Tool):
         hass: HomeAssistant,
         tool_input: llm.ToolInput,
         llm_context: llm.LLMContext,
-    ) -> dict[str, Any]:
+    ) -> llm.ToolResult:
         """Call a service against one exposed entity."""
         args = tool_input.tool_args
         service = str(args["service"]).strip()
         entity_id = str(args["entity_id"]).strip()
 
         if "." not in service:
-            return {"error": "service must look like 'light.turn_on'."}
+            return llm.ToolResult(
+                data={"error": "service must look like 'light.turn_on'."},
+                error=True,
+            )
 
         domain, name = service.split(".", 1)
 
         if domain not in ALLOWED_SERVICE_DOMAINS:
-            return {"error": f"{domain} services are not permitted."}
+            return llm.ToolResult(
+                data={"error": f"{domain} services are not permitted."},
+                error=True,
+            )
         if not hass.services.has_service(domain, name):
-            return {"error": f"{service} does not exist."}
+            return llm.ToolResult(
+                data={"error": f"{service} does not exist."}, error=True
+            )
         if not _visible(hass, entity_id):
-            return {"error": f"{entity_id} is not available."}
+            return llm.ToolResult(
+                data={"error": f"{entity_id} is not available."}, error=True
+            )
 
         try:
             await hass.services.async_call(
@@ -400,15 +440,20 @@ class CallServiceTool(llm.Tool):
             )
         except Exception as err:  # noqa: BLE001 - report, never raise into the turn
             _LOGGER.warning("abode_ai_tools: %s on %s failed: %s", service, entity_id, err)
-            return {"error": f"{service} failed."}
+            return llm.ToolResult(data={"error": f"{service} failed."}, error=True)
 
-        return {"success": True}
+        return llm.ToolResult(data={"success": True})
 
 
 class GetDateTimeTool(llm.Tool):
     """Return the current local date and time on request."""
 
     name = "GetDateTime"
+    title = "Get date and time"
+    integration = DOMAIN
+    annotations = llm.ToolAnnotations(
+        read_only=True, destructive=False, idempotent=True, open_world=False
+    )
     description = (
         "Get the current local date and time. Call this only when the user asks "
         "about the date, the time, or the day of the week."
@@ -420,14 +465,16 @@ class GetDateTimeTool(llm.Tool):
         hass: HomeAssistant,
         tool_input: llm.ToolInput,
         llm_context: llm.LLMContext,
-    ) -> dict[str, Any]:
+    ) -> llm.ToolResult:
         """Return the current date and time."""
         now = dt_util.now()
-        return {
-            "date": now.strftime("%Y-%m-%d"),
-            "time": now.strftime("%H:%M"),
-            "weekday": now.strftime("%A"),
-        }
+        return llm.ToolResult(
+            data={
+                "date": now.strftime("%Y-%m-%d"),
+                "time": now.strftime("%H:%M"),
+                "weekday": now.strftime("%A"),
+            }
+        )
 
 
 class AbodeAIToolsAPI(llm.API):

@@ -1,5 +1,10 @@
 # Abode AI Tools
-v0.4.0
+v0.5.0
+
+Requires Home Assistant 2026.10 or newer. v0.5.0 returns `llm.ToolResult`
+from every tool and declares the integration on every tool, the two changes
+Home Assistant 2026.10 introduced and will enforce in 2027.10/2027.11.
+See "Changes in v0.5.0" below.
 
 Gives your voice assistant a small, fixed set of things it can do in the
 house — and nothing else.
@@ -56,6 +61,17 @@ device-control tools and no network calls.
 
 After adding, tick **Abode AI Tools** under the conversation agent's Tool
 Providers.
+
+## Changes in v0.5.0
+
+- Every LLM tool now declares `integration = "abode_ai_tools"`, clearing
+  Home Assistant's "provides the LLM tool ... without an integration" warning.
+  Home Assistant stops accepting untagged tools in 2027.10.
+- Every tool now returns `llm.ToolResult` instead of a plain JSON object, with
+  `error=True` on failures. The plain-dict form stops working in 2027.11.
+- Tools now carry a human-readable `title` and `ToolAnnotations`, so Home
+  Assistant and MCP clients can tell read-only tools from the one that acts.
+- No change to tool names, schemas, results or the Paperless endpoint format.
 
 ## Credits
 

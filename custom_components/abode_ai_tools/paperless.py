@@ -67,6 +67,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .const import DOMAIN
+
 _LOGGER = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -237,6 +239,13 @@ def _results_of(payload: Any) -> list[dict]:
 class _PaperlessTool(llm.Tool):
     """Base for the three tools. Holds the endpoint from configuration."""
 
+    # All three tools only read. The integration must be declared explicitly
+    # since HA 2026.10; see the note on SearchEntitiesTool in __init__.py.
+    integration = DOMAIN
+    annotations = llm.ToolAnnotations(
+        read_only=True, destructive=False, idempotent=True, open_world=False
+    )
+
     def __init__(self, url: str, token: str | None) -> None:
         """Store the MCP endpoint this tool proxies to."""
         self._url = url
@@ -247,6 +256,7 @@ class FindDocumentTool(_PaperlessTool):
     """Full-text search across the document archive."""
 
     name = "find_document"
+    title = "Find document"
     description = (
         "Search the household document archive by text. Use for questions "
         "about receipts, warranties, manuals, bills, insurance or contracts. "
@@ -263,11 +273,11 @@ class FindDocumentTool(_PaperlessTool):
         hass: HomeAssistant,
         tool_input: llm.ToolInput,
         llm_context: llm.LLMContext,
-    ) -> dict[str, Any]:
+    ) -> llm.ToolResult:
         """Search documents, capped and projected."""
         query = str(tool_input.tool_args["query"]).strip()
         if not query:
-            return {"error": "query is required."}
+            return llm.ToolResult(data={"error": "query is required."}, error=True)
 
         try:
             payload = await _rpc(
@@ -281,7 +291,10 @@ class FindDocumentTool(_PaperlessTool):
             )
         except PaperlessError as err:
             _LOGGER.warning("abode_ai_tools: paperless search failed: %s", err)
-            return {"error": "The document archive is not reachable."}
+            return llm.ToolResult(
+                data={"error": "The document archive is not reachable."},
+                error=True,
+            )
 
         documents = _results_of(payload)
         records = [
@@ -297,13 +310,14 @@ class FindDocumentTool(_PaperlessTool):
                 f"INCOMPLETE: only {len(records)} of {total} shown. "
                 "Narrow the query and call again."
             )
-        return result
+        return llm.ToolResult(data=result)
 
 
 class GetDocumentTool(_PaperlessTool):
     """Metadata for one document, including custom fields."""
 
     name = "get_document"
+    title = "Get document details"
     description = (
         "Get the details of one document by id: title, correspondent, type, "
         "tags and custom fields. 'filed' is when it entered the archive, not "
@@ -316,7 +330,7 @@ class GetDocumentTool(_PaperlessTool):
         hass: HomeAssistant,
         tool_input: llm.ToolInput,
         llm_context: llm.LLMContext,
-    ) -> dict[str, Any]:
+    ) -> llm.ToolResult:
         """Return one document's projected metadata."""
         doc_id = tool_input.tool_args["id"]
         try:
@@ -325,10 +339,15 @@ class GetDocumentTool(_PaperlessTool):
             )
         except PaperlessError as err:
             _LOGGER.warning("abode_ai_tools: paperless get %s failed: %s", doc_id, err)
-            return {"error": "The document archive is not reachable."}
+            return llm.ToolResult(
+                data={"error": "The document archive is not reachable."},
+                error=True,
+            )
 
         if not isinstance(payload, dict):
-            return {"error": f"Document {doc_id} was not found."}
+            return llm.ToolResult(
+                data={"error": f"Document {doc_id} was not found."}, error=True
+            )
 
         record = _doc_record(payload)
         record["tags"] = [
@@ -336,13 +355,14 @@ class GetDocumentTool(_PaperlessTool):
         ]
         custom = payload.get("custom_fields") or []
         record["custom_fields"] = custom[:10] if isinstance(custom, list) else []
-        return record
+        return llm.ToolResult(data=record)
 
 
 class ReadDocumentTool(_PaperlessTool):
     """The text of one document, hard-truncated."""
 
     name = "read_document"
+    title = "Read document"
     description = (
         "Read the text of one document by id. Call find_document first to get "
         "the id. Long documents are truncated."
@@ -354,7 +374,7 @@ class ReadDocumentTool(_PaperlessTool):
         hass: HomeAssistant,
         tool_input: llm.ToolInput,
         llm_context: llm.LLMContext,
-    ) -> dict[str, Any]:
+    ) -> llm.ToolResult:
         """Return the document text, capped at MAX_CONTENT_CHARS."""
         doc_id = tool_input.tool_args["id"]
         try:
@@ -367,7 +387,10 @@ class ReadDocumentTool(_PaperlessTool):
             )
         except PaperlessError as err:
             _LOGGER.warning("abode_ai_tools: paperless read %s failed: %s", doc_id, err)
-            return {"error": "The document archive is not reachable."}
+            return llm.ToolResult(
+                data={"error": "The document archive is not reachable."},
+                error=True,
+            )
 
         if isinstance(payload, dict):
             text = payload.get("content") or payload.get("text") or ""
@@ -375,11 +398,13 @@ class ReadDocumentTool(_PaperlessTool):
             text = str(payload)
 
         truncated = len(text) > MAX_CONTENT_CHARS
-        return {
-            "id": doc_id,
-            "content": text[:MAX_CONTENT_CHARS],
-            "truncated": truncated,
-        }
+        return llm.ToolResult(
+            data={
+                "id": doc_id,
+                "content": text[:MAX_CONTENT_CHARS],
+                "truncated": truncated,
+            }
+        )
 
 
 def build_tools(url: str, token: str | None) -> list[llm.Tool]:
