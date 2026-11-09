@@ -128,7 +128,7 @@ Providers.
   so a down server does not cost 20 seconds on every document turn.
 - `call_service` is now annotated as destructive because it can unlock locks
   or open covers; MCP clients may use that to require approval.
-- Test coverage expanded to 74 dependency-free tests covering the tools,
+- Test coverage expanded to 75 dependency-free tests covering the tools,
   Paperless RPC parsing, config-flow merge logic, policy and bounds. CI now
   runs those tests, hassfest and Marketplace validation (the HACS action).
 - Installation and release docs now use **Settings -> Marketplace** on Home

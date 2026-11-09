@@ -8,15 +8,15 @@
     "@meremortals70"
   ],
   "config_flow": true,
-  "single_config_entry": true,
   "dependencies": [
     "homeassistant",
     "conversation"
   ],
   "documentation": "https://github.com/meremortals70/abode-ai-tools",
-  "issue_tracker": "https://github.com/meremortals70/abode-ai-tools/issues",
   "integration_type": "service",
   "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/meremortals70/abode-ai-tools/issues",
   "requirements": [],
+  "single_config_entry": true,
   "version": "0.6.1"
 }

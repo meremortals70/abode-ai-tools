@@ -180,9 +180,13 @@ class PaperlessRpcTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("timed out", str(exc.exception))
         self.assertTrue(paperless.breaker_is_open(URL))
 
-    async def test_success_closes_breaker(self) -> None:
-        paperless.record_failure(URL, now=0)
-        self.assertTrue(paperless.breaker_is_open(URL, now=0))
+    def test_record_success_closes_breaker(self) -> None:
+        paperless.record_failure(URL)
+        self.assertTrue(paperless.breaker_is_open(URL))
+        paperless.record_success(URL)
+        self.assertFalse(paperless.breaker_is_open(URL))
+
+    async def test_successful_rpc_leaves_breaker_closed(self) -> None:
         fake_ha.SESSION = fake_ha.FakeSession(
             self._response(self._rpc_text("ok"))
         )
