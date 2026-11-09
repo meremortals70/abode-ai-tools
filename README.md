@@ -1,5 +1,5 @@
 # Abode AI Tools
-v0.5.1
+v0.6.0
 
 Requires Home Assistant 2026.10 or newer. Since v0.5.0 every LLM tool
 returns `llm.ToolResult` and declares the integration that provides it, the
@@ -20,7 +20,7 @@ house — and nothing else.
   recognise a room name, it says which rooms it does know about instead of
   guessing.
 - **Check one thing** — "is the garage door shut" — reads a single device and
-  a handful of its details.
+  a small, safe set of its details.
 - **Do one thing** — "turn the deck light on" — acts on a single device.
 - **Tell the time** — the assistant only checks the clock when you actually
   ask about the date, day or time.
@@ -34,21 +34,51 @@ in your household documents.
   blinds, heating and cooling, speakers, locks, the vacuum, scenes, scripts,
   humidifiers, hot water, valves, toggles and buttons. It can read sensors,
   presence, weather, the calendar and sunrise/sunset.
-- It cannot edit your automations, run backups, delete history, or reach
-  anything else in Home Assistant. Those doors are closed in the code, not by
-  asking the AI nicely.
-- It only ever sees devices you have chosen to expose to the assistant.
-- Every answer is capped in size, so the assistant stays fast and never
-  floods itself with data.
-- One device per action, and it must use an exact device it has just looked
-  up — it cannot guess.
+- It can only call a fixed allowlist of entity services. It has no direct
+  access to automations, backups, history or the recorder. Exposed scripts and
+  scenes can still do whatever those scripts and scenes do — exposing one
+  grants that power.
+- It only sees entities exposed to the active assistant. Home Assistant may
+  expose new entities in common domains by default, so review the exposure
+  list rather than assuming a new device is private.
+- Counts, string lengths and attribute values are capped, and document text is
+  truncated, so the assistant stays fast and never floods itself with data.
+- One device per action. The prompt asks it to use an `entity_id` it found
+  with `search_entities`; the code cannot prove that it did.
+
+## Security model
+
+- **Exposure is the boundary.** Only entities exposed to the assistant making
+  the request are visible or controllable. Check
+  Settings -> Voice assistants -> Expose after adding devices. Locks, covers,
+  valves, scenes and scripts deserve particular care: a cover may be a garage
+  door, and a scene or script can contain any action you put in it.
+- **Sensitive domains.** `cover`, `lock` and `valve` are treated as sensitive
+  in the system prompt: the model is told not to act on them, or run a script,
+  unless the request explicitly asked for it. That is guidance, not a hard
+  guarantee. If you do not want voice control of a domain, remove it from
+  `CONTROLLABLE_DOMAINS` and `ALLOWED_SERVICES` in `policy.py`.
+- **Paperless is read-only.** The integration exposes only `query_documents`,
+  `get_document` and `get_document_content`. Issue the Paperless token to a
+  view-only user and restrict the MCP endpoint; the component cannot protect an
+  endpoint that is open to other clients. Use HTTPS when a token is configured.
+- **Document text is untrusted.** Paperless content, entity names and tool
+  results can contain instructions. The system prompt tells the model to treat
+  them as data and never follow instructions inside them. The model is still
+  the last line of defence, so keep sensitive actions out of reach if that
+  matters.
+- **Cloud providers.** This component is provider-agnostic. If you select a
+  cloud conversation agent, entity names, states, attributes and Paperless
+  text are sent to that provider.
 
 ## A note for the household
 
-New devices are **not** exposed to the assistant automatically. When you add
-something and the assistant says it does not exist, expose it under
+Home Assistant may expose new entities in common domains (lights, covers,
+scenes and similar) automatically. When you add something and the assistant
+says it does not exist, expose it under
 Settings -> Voice assistants -> Expose, and give it a name someone would
-actually say out loud.
+actually say out loud. Check that new covers, locks and scenes are exposed only
+if you want the assistant to control them.
 
 Expose only what is needed. If a room has four temperature sensors, expose
 one — otherwise the assistant has to guess which one you meant.
@@ -61,6 +91,33 @@ device-control tools and no network calls.
 
 After adding, tick **Abode AI Tools** under the conversation agent's Tool
 Providers.
+
+## Changes in v0.6.0
+
+- Exposure now follows `LLMContext.assistant`, so an AI Task or another
+  assistant sees its own exposure set instead of the conversation assistant's.
+- `call_service` now uses an explicit `(domain, service)` allowlist. It blocks
+  `homeassistant.reload_config_entry`, `homeassistant.save_persistent_states`
+  and other services outside the intended surface. The target entity's domain
+  must be controllable, and a non-`homeassistant` service must match that
+  domain.
+- Result strings, attribute values, document metadata, tags and custom fields
+  are now length-capped. `get_entity_state` returns a per-domain safe attribute
+  set, so GPS coordinates, calendar descriptions and large lists such as
+  weather forecasts or media source lists are no longer returned.
+- Paperless responses have a byte cap, are type-checked before use, no longer
+  follow redirects, and the configured URL is redacted from logs.
+- The system prompt now tells the model that tool results, entity names and
+  document text are untrusted data, and treats `cover`, `lock` and `valve` as
+  sensitive domains.
+- Added dependency-free unit tests for the policy allowlists and the bounding
+  helpers.
+
+## Tests
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 ## Changes in v0.5.1
 
