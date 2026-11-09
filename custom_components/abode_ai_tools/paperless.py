@@ -38,19 +38,17 @@ effectively anonymous. Restrict it at Caddy.
 
 TRANSPORT
 
-paperless-mcp --http serves stateless Streamable HTTP: sessionIdGenerator is
-undefined and a fresh server+transport is built per request (index.ts:105).
-POST only; GET /mcp returns 405. So this module speaks plain JSON-RPC over
-one aiohttp POST per call — no MCP SDK, no session handling, and
-manifest.json keeps "requirements": [].
+paperless-mcp --http serves stateless Streamable HTTP: a fresh server and
+transport is built per request. POST only; GET /mcp returns 405. So this
+module speaks plain JSON-RPC over one aiohttp POST per call — no MCP SDK, no
+session handling, and manifest.json keeps "requirements": [].
 
-UNVERIFIED — TEST BEFORE TRUSTING
+TRANSPORT VERIFICATION
 
-Whether a bare tools/call POST is accepted without a preceding `initialize`
-is NOT established. The stateless design implies it must be, since no state
-survives between requests, but that is inference, not evidence. Prove it with
-the curl in the deployment notes before wiring this into a pipeline. If it is
-rejected, _rpc() gains an initialize POST and nothing else changes.
+The deployed server accepts a bare tools/call POST without a preceding
+`initialize`; this module runs against it on the voice path. If a future
+server requires the handshake, _rpc() gains an initialize POST and nothing
+else changes.
 """
 
 from __future__ import annotations
@@ -59,6 +57,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from typing import Any
 
 import voluptuous as vol
@@ -91,7 +90,7 @@ MAX_CONTENT_CHARS = 4000
 """Maximum characters of document text returned by read_document.
 
 At roughly 4 characters per token this is ~1,000 tokens of prefill, which at
-337 tok/s (252 as-built §6.14) costs ~3 s before the model can speak. It is
+the measured prefill rate costs ~3 s before the model can speak. It is
 already the most expensive thing in this file. Do not raise it without
 measuring the turn.
 """
@@ -109,6 +108,13 @@ this cap a large document or a compromised endpoint would be fully buffered
 and parsed first.
 """
 
+FAILURE_COOLDOWN = 60.0
+"""Seconds to fail fast after a connection-level Paperless failure.
+
+Without this, a down Paperless server costs RPC_TIMEOUT on every document
+turn. A success, or the end of the cooldown, closes the breaker again.
+"""
+
 RPC_TIMEOUT = 20
 """Seconds. Paperless full-text search on a large archive is not instant."""
 
@@ -117,6 +123,25 @@ _ACCEPT = "application/json, text/event-stream"
 
 class PaperlessError(Exception):
     """Raised when the MCP server cannot be reached or returns an error."""
+
+
+_FAILURES: dict[str, float] = {}
+
+
+def breaker_is_open(url: str, now: float | None = None) -> bool:
+    """Return True while a failed endpoint is in its fail-fast window."""
+    until = _FAILURES.get(url)
+    return until is not None and (time.monotonic() if now is None else now) < until
+
+
+def record_failure(url: str, now: float | None = None) -> None:
+    """Open the breaker for this endpoint."""
+    _FAILURES[url] = (time.monotonic() if now is None else now) + FAILURE_COOLDOWN
+
+
+def record_success(url: str) -> None:
+    """Close the breaker for this endpoint."""
+    _FAILURES.pop(url, None)
 
 
 def _redact(message: str, url: str) -> str:
@@ -132,6 +157,8 @@ async def _rpc(
     Returns whatever the tool put in its text content block, JSON-decoded when
     it parses as JSON and the raw string when it does not.
     """
+    if breaker_is_open(url):
+        raise PaperlessError("temporarily unavailable")
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -156,6 +183,8 @@ async def _rpc(
                     and resp.content_length > MAX_RESPONSE_BYTES
                 ):
                     raise PaperlessError("response too large")
+                if resp.status >= 500:
+                    record_failure(url)
                 if resp.status != 200:
                     raise PaperlessError(f"HTTP {resp.status}")
                 body_bytes = await resp.content.read(MAX_RESPONSE_BYTES + 1)
@@ -165,11 +194,14 @@ async def _rpc(
                     resp.charset or "utf-8", errors="replace"
                 )
                 content_type = resp.headers.get("Content-Type", "")
+        record_success(url)
     except TimeoutError as err:
+        record_failure(url)
         raise PaperlessError("timed out") from err
     except PaperlessError:
         raise
     except Exception as err:  # noqa: BLE001 - never raise into the turn
+        record_failure(url)
         raise PaperlessError(_redact(str(err), url)) from err
 
     # The transport may answer as JSON or as a single SSE event, depending on
@@ -255,7 +287,7 @@ def _excerpt(doc: dict) -> str:
     wrapped in <span class="match ..."> markers. It is worth returning because
     it often lets the model judge whether a hit is the right document without
     a second round trip - and decode, not prefill, is this hardware's binding
-    constraint (abode_ai_tools as-built, Q19).
+    constraint.
 
     It is NOT a substitute for read_document when the answer involves a date.
     The only trustworthy dates are inside the document text; see _doc_record.
@@ -275,9 +307,9 @@ def _doc_record(doc: dict, *, with_excerpt: bool = False) -> dict[str, Any]:
         "id": doc.get("id"),
         "title": short(doc.get("title") or "", MAX_TITLE_CHARS),
         # NOT the date on the document. Paperless "created" is when the
-        # document entered the archive (architect, 28 Jul 2026). A date that
-        # matters - invoice date, purchase date, expiry - is only in the
-        # document text. Named to make that impossible to misread.
+        # document entered the archive. A date that matters - invoice date,
+        # purchase date, expiry - is only in the document text. Named to make
+        # that impossible to misread.
         "filed": str(doc.get("created_date") or doc.get("created") or "")[:10],
         "correspondent": short(
             _name_of(doc.get("correspondent")), MAX_METADATA_CHARS

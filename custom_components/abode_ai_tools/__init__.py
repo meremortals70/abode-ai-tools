@@ -23,9 +23,10 @@ DATETIME
 
 One tool is named `GetDateTime`. Home Assistant appends a timestamp with
 SECONDS resolution to the conversation system prompt unless an exposed tool's
-name ends in "GetDateTime" (chat_log.py:738-749, 2026.7.4). That timestamp
-changes every second, so the prompt prefix never repeats and the llama.cpp KV
-cache can never match it. With this tool present the prefix is byte-stable.
+name ends in "GetDateTime" (verified against chat_log.py on Home Assistant
+2026.11). That timestamp changes every second, so the prompt prefix never
+repeats and the llama.cpp KV cache can never match it. With this tool present
+the prefix is byte-stable.
 
 This makes the separate `abode_clock` component redundant. Leaving it installed
 is harmless — when more than one LLM API is selected, HA wraps tools in
@@ -52,6 +53,7 @@ INSTALL
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from datetime import date, datetime
@@ -77,24 +79,28 @@ from .policy import (
     MAX_ATTRIBUTE_CHARS,
     MAX_AREA_CHARS,
     MAX_ENTITY_ID_CHARS,
+    MAX_ERROR_CHARS,
     MAX_KNOWN_AREAS,
     MAX_NAME_CHARS,
     MAX_RESULTS,
     MAX_STATE_CHARS,
     READABLE_DOMAINS,
     SENSITIVE_DOMAINS,
+    SERVICE_CALL_TIMEOUT,
     attributes_for,
     entity_controllable,
     entity_domain,
+    query_matches,
     service_allowed,
     service_matches_entity,
+    text_matches,
 )
 from .util import safe_url, short
 
 _LOGGER = logging.getLogger(__name__)
 
-type AbodeAIToolsEntry = ConfigEntry[Callable[[], None]]
-"""The config entry's runtime_data is the llm API's unregister callable."""
+type AbodeAIToolsEntry = ConfigEntry[Callable[[], None] | None]
+"""The config entry's runtime_data is the llm API's unregister callable or None."""
 
 
 # ---------------------------------------------------------------------------
@@ -134,19 +140,11 @@ def _area_matches(requested: str, area: Any) -> bool:
     """Match a spoken area against an area's name or any of its aliases.
 
     Matching is bidirectional on purpose. "lounge" must find "Lounge Room",
-    and "lounge room" must find "Lounge" - a one-directional substring test
-    only handles the first of those. Aliases are consulted the same way, so
-    an area named "Lounge Room" with the alias "TV room" answers to both,
-    exactly as Home Assistant's own local intents do.
+    and "lounge room" must find "Lounge". Matching is on word boundaries so
+    "den" does not match "Garden" and "room" does not match "Bedroom".
     """
     candidates = [area.name, *(area.aliases or ())]
-    for candidate in candidates:
-        value = (candidate or "").strip().lower()
-        if not value:
-            continue
-        if requested in value or value in requested:
-            return True
-    return False
+    return any(text_matches(requested, candidate or "") for candidate in candidates)
 
 
 def _matching_area_ids(hass: HomeAssistant, requested: str) -> set[str]:
@@ -190,8 +188,10 @@ def _visible(hass: HomeAssistant, assistant: str, entity_id: str) -> bool:
         return False
     try:
         return async_should_expose(hass, assistant, entity_id)
-    except Exception:  # noqa: BLE001 - never let exposure lookup break a turn
-        _LOGGER.debug("abode_ai_tools: exposure check failed for %s", entity_id)
+    except Exception as err:  # noqa: BLE001 - never let exposure lookup break a turn
+        _LOGGER.debug(
+            "abode_ai_tools: exposure check failed for %s: %s", entity_id, err
+        )
         return False
 
 
@@ -264,6 +264,19 @@ class SearchEntitiesTool(llm.Tool):
         area = (args.get("area") or "").strip().lower()
         state_filter = (args.get("state") or "").strip().lower()
 
+        if domain and domain not in READABLE_DOMAINS:
+            return llm.ToolResult(
+                data={
+                    "results": [],
+                    "count": 0,
+                    "error": (
+                        f"{short(domain, MAX_AREA_CHARS)} is not searchable. "
+                        f"Use one of: {', '.join(sorted(READABLE_DOMAINS))}."
+                    ),
+                },
+                error=True,
+            )
+
         # An unrecognised area returns the areas that do exist, so the model
         # can correct itself instead of guessing again. This costs no prefill:
         # it is not a tool schema, only a reply on a turn that already failed.
@@ -290,6 +303,7 @@ class SearchEntitiesTool(llm.Tool):
 
         matches: list[dict[str, str]] = []
         total = 0
+        entity_reg = er.async_get(hass)
 
         # Cheap filters first: domain, state and name. Exposure and area
         # resolution are comparatively expensive, so they run only on entities
@@ -303,11 +317,11 @@ class SearchEntitiesTool(llm.Tool):
             if state_filter and state.state.lower() != state_filter:
                 continue
             name = state.attributes.get("friendly_name") or entity_id
-            if query and (
-                query not in str(name).lower()
-                and query not in entity_id.lower()
-            ):
-                continue
+            if query:
+                entry = entity_reg.async_get(entity_id)
+                aliases = tuple(getattr(entry, "aliases", ()) or ())
+                if not query_matches(query, entity_id, str(name), aliases):
+                    continue
             if area_ids and _area_id(hass, entity_id) not in area_ids:
                 continue
             if not _visible(hass, assistant, entity_id):
@@ -392,10 +406,12 @@ class CallServiceTool(llm.Tool):
     integration = DOMAIN
     # Writes, but does not remove anything, and touches nothing outside this
     # home. Not idempotent: "turn on" twice is not the same as once for every
-    # service this tool can reach. Sensitive domains are called out in the
-    # API prompt.
+    # service this tool can reach. It can unlock a lock or open a cover, so it
+    # is declared destructive even though most calls are reversible; MCP
+    # clients may use this to require approval. Sensitive domains are also
+    # called out in the API prompt.
     annotations = llm.ToolAnnotations(
-        read_only=False, destructive=False, idempotent=False, open_world=False
+        read_only=False, destructive=True, idempotent=False, open_world=False
     )
     description = (
         "Act on a device. service is like 'light.turn_on' or 'cover.close_cover'. "
@@ -469,18 +485,33 @@ class CallServiceTool(llm.Tool):
             )
 
         try:
-            await hass.services.async_call(
-                domain,
-                name,
-                {"entity_id": entity_id},
-                blocking=True,
-                context=llm_context.context,
+            async with asyncio.timeout(SERVICE_CALL_TIMEOUT):
+                await hass.services.async_call(
+                    domain,
+                    name,
+                    {"entity_id": entity_id},
+                    blocking=True,
+                    context=llm_context.context,
+                )
+        except TimeoutError:
+            _LOGGER.warning(
+                "abode_ai_tools: %s on %s timed out after %s s",
+                service,
+                entity_id,
+                SERVICE_CALL_TIMEOUT,
+            )
+            return llm.ToolResult(
+                data={"error": f"{service} timed out."}, error=True
             )
         except Exception as err:  # noqa: BLE001 - report, never raise into the turn
             _LOGGER.warning(
                 "abode_ai_tools: %s on %s failed: %s", service, entity_id, err
             )
-            return llm.ToolResult(data={"error": f"{service} failed."}, error=True)
+            reason = short(str(err), MAX_ERROR_CHARS)
+            message = (
+                f"{service} failed: {reason}" if reason else f"{service} failed."
+            )
+            return llm.ToolResult(data={"error": message}, error=True)
 
         return llm.ToolResult(data={"success": True})
 
@@ -578,6 +609,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: AbodeAIToolsEntry) -> bo
                 "abode_ai_tools: Paperless URL uses plain HTTP; the bearer "
                 "token will be sent unencrypted"
             )
+        if not token:
+            _LOGGER.warning(
+                "abode_ai_tools: Paperless is configured without a token; "
+                "ensure the MCP endpoint is restricted"
+            )
         extra_tools = paperless.build_tools(url, token)
         _LOGGER.info(
             "abode_ai_tools: paperless tools enabled (%s)", safe_url(url)
@@ -604,6 +640,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: AbodeAIToolsEntry) -> bo
 
 async def async_unload_entry(hass: HomeAssistant, entry: AbodeAIToolsEntry) -> bool:
     """Deregister the LLM API so the entry can be reloaded or removed."""
-    entry.runtime_data()
+    unregister = entry.runtime_data
+    if unregister is not None:
+        unregister()
+        entry.runtime_data = None
     return True
 

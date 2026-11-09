@@ -126,5 +126,49 @@ class AttributePolicyTests(unittest.TestCase):
         self.assertNotIn("entity_picture", attributes)
 
 
+class TextMatchTests(unittest.TestCase):
+    """Area matching must not turn short names into substring matches."""
+
+    def test_exact_and_phrase_matches(self) -> None:
+        self.assertTrue(policy.text_matches("den", "Den"))
+        self.assertTrue(policy.text_matches("lounge", "Lounge Room"))
+        self.assertTrue(policy.text_matches("lounge room", "Lounge"))
+        self.assertTrue(policy.text_matches("TV room", "TV Room"))
+
+    def test_word_boundaries_remove_false_positives(self) -> None:
+        self.assertFalse(policy.text_matches("den", "Garden"))
+        self.assertFalse(policy.text_matches("room", "Bedroom"))
+        self.assertFalse(policy.text_matches("x", "Luxe"))
+
+    def test_empty_values_do_not_match(self) -> None:
+        self.assertFalse(policy.text_matches("", "Kitchen"))
+        self.assertFalse(policy.text_matches("Kitchen", ""))
+
+
+class QueryMatchTests(unittest.TestCase):
+    """Search should find friendly names, ids and aliases."""
+
+    def test_matches_name_id_and_alias(self) -> None:
+        self.assertTrue(
+            policy.query_matches("kitchen", "light.kitchen", "Kitchen Light")
+        )
+        self.assertTrue(
+            policy.query_matches(
+                "big", "light.kitchen", "Kitchen Light", ("big light",)
+            )
+        )
+        self.assertTrue(
+            policy.query_matches("light", "light.kitchen", "Kitchen Light")
+        )
+
+    def test_empty_query_matches_everything(self) -> None:
+        self.assertTrue(policy.query_matches("", "light.kitchen", "Kitchen Light"))
+
+    def test_non_match(self) -> None:
+        self.assertFalse(
+            policy.query_matches("garage", "light.kitchen", "Kitchen Light")
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

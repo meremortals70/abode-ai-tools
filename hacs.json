@@ -1,6 +1,5 @@
 {
   "name": "Abode AI Tools",
   "content_in_root": false,
-  "render_readme": true,
   "homeassistant": "2026.10.0"
 }

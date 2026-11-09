@@ -10,6 +10,8 @@ security boundary, not as configuration.
 
 from __future__ import annotations
 
+import re
+
 # ---------------------------------------------------------------------------
 # Domains
 # ---------------------------------------------------------------------------
@@ -182,6 +184,10 @@ MAX_AREA_CHARS = 40
 MAX_STATE_CHARS = 120
 MAX_ATTRIBUTE_CHARS = 200
 MAX_KNOWN_AREAS = 30
+MAX_ERROR_CHARS = 200
+
+SERVICE_CALL_TIMEOUT = 15
+"""Seconds. A service that blocks longer than this ends the voice turn."""
 
 
 def entity_domain(entity_id: str) -> str:
@@ -213,3 +219,50 @@ def service_matches_entity(domain: str, entity_id: str) -> bool:
 def attributes_for(entity_id: str) -> tuple[str, ...]:
     """Return the safe attribute names for an entity's domain."""
     return ATTRIBUTE_ALLOWLIST.get(entity_domain(entity_id), ())
+
+
+def phrase_in(text: str, phrase: str) -> bool:
+    """Return True if phrase appears in text on word boundaries.
+
+    A plain substring test made a request for "den" match "Garden", and
+    "room" match every room-like area. Word boundaries keep the useful
+    bidirectional matching while removing those false positives.
+    """
+    text = text.strip().lower()
+    phrase = phrase.strip().lower()
+    if not text or not phrase:
+        return False
+    return (
+        re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", text) is not None
+    )
+
+
+def text_matches(requested: str, candidate: str) -> bool:
+    """Bidirectional word-boundary match for a spoken area name."""
+    requested = requested.strip().lower()
+    candidate = candidate.strip().lower()
+    if not requested or not candidate:
+        return False
+    return (
+        requested == candidate
+        or phrase_in(candidate, requested)
+        or phrase_in(requested, candidate)
+    )
+
+
+def query_matches(
+    query: str,
+    entity_id: str,
+    name: str,
+    aliases: tuple[str, ...] = (),
+) -> bool:
+    """Return True if a search query matches an id, name or alias."""
+    query = query.strip().lower()
+    if not query:
+        return True
+    candidates = [entity_id, name, *aliases]
+    return any(
+        query in str(candidate).lower()
+        for candidate in candidates
+        if candidate
+    )

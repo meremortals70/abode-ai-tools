@@ -38,6 +38,29 @@ def _clean(user_input: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in user_input.items() if v not in (None, "")}
 
 
+def _merge(
+    entry_data: dict[str, Any], user_input: dict[str, Any]
+) -> dict[str, Any]:
+    """Merge reconfigure input without dropping an existing token.
+
+    A blank token keeps the existing one. Clearing the URL also clears the
+    token, because there is no endpoint left to use it against.
+    """
+    data = dict(entry_data)
+    cleaned = _clean(user_input)
+
+    if CONF_PAPERLESS_URL in cleaned:
+        data[CONF_PAPERLESS_URL] = cleaned[CONF_PAPERLESS_URL]
+    else:
+        data.pop(CONF_PAPERLESS_URL, None)
+        data.pop(CONF_PAPERLESS_TOKEN, None)
+
+    if CONF_PAPERLESS_TOKEN in cleaned:
+        data[CONF_PAPERLESS_TOKEN] = cleaned[CONF_PAPERLESS_TOKEN]
+
+    return data
+
+
 class AbodeAIToolsConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle the Abode AI Tools config flow."""
 
@@ -66,4 +89,6 @@ class AbodeAIToolsConfigFlow(ConfigFlow, domain=DOMAIN):
                 ),
             )
 
-        return self.async_update_reload_and_abort(entry, data=_clean(user_input))
+        return self.async_update_reload_and_abort(
+            entry, data=_merge(entry.data, user_input)
+        )
